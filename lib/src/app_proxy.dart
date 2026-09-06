@@ -3,6 +3,8 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
+import 'payload_tap.dart';
+
 class ProxyFlow {
   ProxyFlow({
     required this.id,
@@ -28,6 +30,26 @@ class ProxyFlow {
   int bytesUp = 0;
   int bytesDown = 0;
   String? error;
+  final StringBuffer requestLog = StringBuffer();
+  final StringBuffer responseLog = StringBuffer();
+
+  void appendPreview(StringBuffer into, List<int> data) {
+    if (into.length >= 8192) {
+      return;
+    }
+    final preview = previewPayload(data);
+    if (into.isNotEmpty) {
+      into.write('\n');
+    }
+    into.write(preview.text);
+    if (into.length > 8192) {
+      final keep = into.toString().substring(0, 8192);
+      into
+        ..clear()
+        ..write(keep)
+        ..write('\n…');
+    }
+  }
 
   bool get open => endedAt == null;
 
@@ -137,6 +159,7 @@ class AppProxyServer {
         processName: processName,
       );
       _addFlow(flow);
+      flow.appendPreview(flow.requestLog, headerBytes);
 
       remote = await Socket.connect(
         request.host,
@@ -156,6 +179,8 @@ class AppProxyServer {
           remote,
           onUp: (n) => _countUp(flow!, n),
           onDown: (n) => _countDown(flow!, n),
+          onUpBytes: (data) => flow!.appendPreview(flow.requestLog, data),
+          onDownBytes: (data) => flow!.appendPreview(flow.responseLog, data),
         );
         return;
       }
@@ -167,6 +192,8 @@ class AppProxyServer {
         remote,
         onUp: (n) => _countUp(flow!, n),
         onDown: (n) => _countDown(flow!, n),
+        onUpBytes: (data) => flow!.appendPreview(flow.requestLog, data),
+        onDownBytes: (data) => flow!.appendPreview(flow.responseLog, data),
         onStatus: (status) {
           flow!.status = status;
           _notify();
@@ -233,6 +260,7 @@ class _SocketReader {
         if (_sink != null) {
           _sink!.add(data);
           _onUp?.call(data.length);
+          _onUpBytes?.call(data);
           return;
         }
         _buffer.add(data);
@@ -263,6 +291,7 @@ class _SocketReader {
   var _done = false;
   Socket? _sink;
   void Function(int)? _onUp;
+  void Function(List<int> data)? _onUpBytes;
   final BytesBuilder _responseHead = BytesBuilder(copy: false);
 
   void send(List<int> bytes) {
@@ -300,14 +329,18 @@ class _SocketReader {
     Socket remote, {
     required void Function(int) onUp,
     required void Function(int) onDown,
+    void Function(List<int> data)? onUpBytes,
+    void Function(List<int> data)? onDownBytes,
     void Function(int status)? onStatus,
   }) async {
-    _onUp = onUp;
+    _onUp = (n) => onUp(n);
+    _onUpBytes = onUpBytes;
     _sink = remote;
     final leftover = _buffer.takeBytes();
     if (leftover.isNotEmpty) {
       remote.add(leftover);
       onUp(leftover.length);
+      onUpBytes?.call(leftover);
     }
 
     var statusRead = false;
@@ -315,6 +348,7 @@ class _SocketReader {
       (data) {
         _client.add(data);
         onDown(data.length);
+        onDownBytes?.call(data);
         if (statusRead) {
           return;
         }

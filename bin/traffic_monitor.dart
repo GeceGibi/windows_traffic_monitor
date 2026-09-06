@@ -115,9 +115,16 @@ Future<void> _run(_Options options) async {
     }
   }
 
+  PayloadTap? tap;
+  try {
+    tap = await PayloadTap.start();
+  } catch (error) {
+    stderr.writeln('Payload tap failed: $error');
+  }
+
   stdout.writeln(
-    'Logging only ${target.label} via ${proxy.listenLabel}.  '
-    'HTTPS is tunneled (CONNECT), not decrypted.  Ctrl+C to exit.',
+    'Logging only ${target.label}.  '
+    'DATA needs Administrator.  HTTPS payload is encrypted.  Ctrl+C to exit.',
   );
 
   var shuttingDown = false;
@@ -126,6 +133,7 @@ Future<void> _run(_Options options) async {
       return;
     }
     shuttingDown = true;
+    tap?.stop();
     child?.kill();
     await session.stop();
   }
@@ -143,7 +151,16 @@ Future<void> _run(_Options options) async {
       final snap = monitor.capture(
         only: (name, pid) => target.matches(name, pid),
       );
-      _render(snap, previous, options, proxy, target, clear: !first);
+      tap?.setConnections(snap.endpoints);
+      _render(
+        snap,
+        previous,
+        options,
+        proxy,
+        target,
+        tap: tap,
+        clear: !first,
+      );
       previous = snap;
       first = false;
     } on WindowsNetException catch (error) {
@@ -198,9 +215,8 @@ sends through the local proxy. Nothing else on the machine is logged.
   --no-color          Disable ANSI colors
   --help              Show this help
 
-Requires Windows. Use --launch so the app actually uses the proxy.
-Already-running apps are socket-logged only unless they are started
-with --launch. HTTPS payloads are not decrypted.
+Requires Windows. Run as Administrator to see DATA payloads.
+HTTPS/TLS content stays encrypted. Plain HTTP/text is shown.
 ''';
 
 class _Options {
@@ -334,6 +350,7 @@ void _render(
   _Options options,
   AppProxyServer proxy,
   ProxyTarget target, {
+  PayloadTap? tap,
   required bool clear,
 }) {
   bool visible(NetEndpoint socket) {
@@ -355,20 +372,12 @@ void _render(
     if (previous != null)
       for (final socket in previous.endpoints) socket.key,
   };
-  final currentKeys = <String>{
-    for (final socket in current.endpoints) socket.key,
-  };
   final opened = [
     for (final socket in current.endpoints)
       if (previous != null &&
           !previousKeys.contains(socket.key) &&
           visible(socket))
         socket,
-  ];
-  final closed = [
-    if (previous != null)
-      for (final socket in previous.endpoints)
-        if (!currentKeys.contains(socket.key) && visible(socket)) socket,
   ];
 
   final buffer = StringBuffer();
@@ -386,12 +395,88 @@ void _render(
     '${current.capturedAt.toLocal()}',
   );
   buffer.writeln();
-  _writeFlows(buffer, proxy, options);
+  _writeData(buffer, tap, proxy, options);
   buffer.writeln();
-  _writeEvents(buffer, opened, closed, options);
+  _writeFlows(buffer, proxy, options);
   buffer.writeln();
   _writeSockets(buffer, sockets, opened, options);
   stdout.write(buffer);
+}
+
+void _writeData(
+  StringBuffer buffer,
+  PayloadTap? tap,
+  AppProxyServer proxy,
+  _Options options,
+) {
+  final tapStatus = tap?.error ?? tap?.status ?? 'off';
+  buffer.writeln(_style(options, '1', 'DATA  tap=$tapStatus'));
+
+  final rows = <_DataRow>[
+    for (final chunk in tap?.chunks ?? const <PayloadChunk>[])
+      _DataRow(
+        direction: chunk.direction,
+        kind: chunk.kind,
+        title: '${chunk.local} -> ${chunk.remote}',
+        bytes: chunk.bytes,
+        text: chunk.text,
+      ),
+    for (final flow in proxy.flows)
+      if (flow.requestLog.isNotEmpty || flow.responseLog.isNotEmpty)
+        _DataRow(
+          direction: 'http',
+          kind: flow.method,
+          title: '${flow.authority} ${flow.method == 'CONNECT' ? '' : flow.path}',
+          bytes: flow.bytesUp + flow.bytesDown,
+          text: [
+            if (flow.requestLog.isNotEmpty) '>> ${flow.requestLog}',
+            if (flow.responseLog.isNotEmpty) '<< ${flow.responseLog}',
+          ].join('\n'),
+        ),
+  ];
+
+  if (rows.isEmpty) {
+    buffer.writeln(
+      tap?.error != null
+          ? '  ${tap!.error}'
+          : '  (henuz payload yok — admin gerekir, HTTPS sifreli kalir)',
+    );
+    return;
+  }
+
+  for (final row in rows.reversed.take(8)) {
+    final arrow = switch (row.direction) {
+      'up' => '↑',
+      'down' => '↓',
+      _ => '*',
+    };
+    buffer.writeln(
+      '  $arrow ${_pad(row.kind, 5)} ${_bytes(row.bytes).padRight(8)} '
+      '${_clip(row.title.trim(), 70)}',
+    );
+    for (final line in row.text.split('\n').take(6)) {
+      if (line.trim().isEmpty) {
+        continue;
+      }
+      buffer.writeln('      ${_clip(line, 110)}');
+    }
+  }
+}
+
+class _DataRow {
+  const _DataRow({
+    required this.direction,
+    required this.kind,
+    required this.title,
+    required this.bytes,
+    required this.text,
+  });
+
+  final String direction;
+  final String kind;
+  final String title;
+  final int bytes;
+  final String text;
 }
 
 void _writeFlows(StringBuffer buffer, AppProxyServer proxy, _Options options) {
@@ -434,47 +519,6 @@ void _writeFlows(StringBuffer buffer, AppProxyServer proxy, _Options options) {
           ? _style(options, '33', line)
           : line,
     );
-  }
-}
-
-void _writeEvents(
-  StringBuffer buffer,
-  List<NetEndpoint> opened,
-  List<NetEndpoint> closed,
-  _Options options,
-) {
-  buffer.writeln(_style(options, '1', 'SOCKET EVENTS'));
-  if (opened.isEmpty && closed.isEmpty) {
-    buffer.writeln('  (no open/close since last refresh)');
-    return;
-  }
-  for (final socket in opened.take(8)) {
-    buffer.writeln(
-      _style(
-        options,
-        '32',
-        '  + ${_clip(socket.processName, 18)}  '
-            '${socket.protoLabel} ${socket.state}  '
-            '${socket.local} -> ${socket.remote}',
-      ),
-    );
-  }
-  for (final socket in closed.take(8)) {
-    buffer.writeln(
-      _style(
-        options,
-        '31',
-        '  - ${_clip(socket.processName, 18)}  '
-            '${socket.protoLabel} ${socket.state}  '
-            '${socket.local} -> ${socket.remote}',
-      ),
-    );
-  }
-  final extra =
-      (opened.length - 8).clamp(0, opened.length) +
-      (closed.length - 8).clamp(0, closed.length);
-  if (extra > 0) {
-    buffer.writeln('  ... $extra more events');
   }
 }
 
