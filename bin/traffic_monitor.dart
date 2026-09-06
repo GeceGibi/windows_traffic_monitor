@@ -2,7 +2,7 @@ import 'dart:async';
 import 'dart:io';
 import 'dart:math' as math;
 
-import 'package:windows_traffic_monitor/src/win32_net.dart';
+import 'package:windows_traffic_monitor/windows_traffic_monitor.dart';
 
 void main(List<String> args) async {
   if (!Platform.isWindows) {
@@ -18,52 +18,189 @@ void main(List<String> args) async {
   }
 
   enableVirtualTerminal();
+
+  if (options.listProcesses) {
+    _printProcesses();
+    return;
+  }
+
+  await _run(options);
+}
+
+Future<void> _run(_Options options) async {
+  final table = ProcessTable();
+  final resolver = TargetResolver(table);
+
+  ProxyTarget target;
+  if (options.launch != null ||
+      options.pid != null ||
+      options.process != null) {
+    target = resolver.resolve(
+      name: options.process,
+      pid: options.pid,
+      launchPath: options.launch,
+      launchArgs: options.launchArgs,
+    );
+    if (options.launch == null && target.processes.isEmpty) {
+      stderr.writeln(
+        'No running process matched '
+        '${options.pid != null ? 'pid ${options.pid}' : options.process}.',
+      );
+      exitCode = 1;
+      return;
+    }
+  } else {
+    final picked = await resolver.pickInteractive();
+    if (picked == null) {
+      exitCode = 1;
+      return;
+    }
+    target = picked;
+  }
+
   final monitor = WindowsNetMonitor();
+  late final AppProxyServer proxy;
+  proxy = AppProxyServer(
+    host: options.listenAddress,
+    port: options.port,
+    resolveOwner: (clientPort) {
+      final endpoint = monitor.findLocalTcp(
+        clientPort,
+        remotePort: proxy.boundPort,
+      );
+      if (endpoint == null) {
+        return null;
+      }
+      return (pid: endpoint.pid, name: endpoint.processName);
+    },
+    includeFlow: (pid, name) => target.matches(name, pid),
+  );
+  Process? child;
+
+  final session = ProxySession(target: target, proxy: proxy);
+  try {
+    await session.start();
+  } catch (error) {
+    stderr.writeln('Failed to start proxy: $error');
+    await session.stop();
+    exitCode = 1;
+    return;
+  }
+
+  if (options.launch != null) {
+    try {
+      child = await const ProxyLauncher().start(
+        executable: options.launch!,
+        args: options.launchArgs,
+        proxyUrl: 'http://${proxy.listenLabel}',
+        freshProfile: options.freshProfile,
+      );
+      target = ProxyTarget(
+        processes: [
+          ProcessInfo(
+            pid: child.pid,
+            name: target.filter ?? options.launch!,
+            path: options.launch!,
+          ),
+        ],
+        launchPath: options.launch,
+        launchArgs: options.launchArgs,
+        filter: target.filter,
+      );
+    } catch (error) {
+      stderr.writeln('Failed to launch ${options.launch}: $error');
+      await session.stop();
+      exitCode = 1;
+      return;
+    }
+  }
+
+  stdout.writeln(
+    'Logging only ${target.label} via ${proxy.listenLabel}.  '
+    'HTTPS is tunneled (CONNECT), not decrypted.  Ctrl+C to exit.',
+  );
+
+  var shuttingDown = false;
+  Future<void> shutdown() async {
+    if (shuttingDown) {
+      return;
+    }
+    shuttingDown = true;
+    child?.kill();
+    await session.stop();
+  }
+
+  ProcessSignal.sigint.watch().listen((_) async {
+    await shutdown();
+    exit(0);
+  });
+
   Snapshot? previous;
   var first = true;
 
-  stdout.writeln(
-    'Windows socket monitor — every TCP/UDP endpoint the OS exposes. '
-    'No packet payloads. Ctrl+C to exit.',
-  );
-
-  Timer? timer;
   void tick() {
     try {
-      final snap = monitor.capture();
-      _render(snap, previous, options, clear: !first);
+      final snap = monitor.capture(
+        only: (name, pid) => target.matches(name, pid),
+      );
+      _render(snap, previous, options, proxy, target, clear: !first);
       previous = snap;
       first = false;
     } on WindowsNetException catch (error) {
       stderr.writeln(error);
-      timer?.cancel();
-      exitCode = 1;
     }
   }
 
   tick();
-  timer = Timer.periodic(Duration(milliseconds: options.intervalMs), (_) {
-    tick();
+  Timer.periodic(Duration(milliseconds: options.intervalMs), (_) {
+    if (!shuttingDown) {
+      tick();
+    }
   });
 }
 
+void _printProcesses() {
+  final rows = ProcessTable().list();
+  stdout.writeln('${_pad('PID', 10)}${_pad('Process', 28)}Path');
+  for (final process in rows) {
+    stdout.writeln(
+      '${_pad('${process.pid}', 10)}'
+      '${_pad(_clip(process.name, 26), 28)}'
+      '${process.path}',
+    );
+  }
+}
+
 const _usage = '''
-Usage: dart run bin/traffic_monitor.dart [options]
+Usage: traffic_monitor.exe
+       traffic_monitor.exe --pid=1234
+       traffic_monitor.exe --launch=APP.exe [-- args]
 
-Shows every TCP and UDP socket Windows reports (listen, established,
-time-wait, bound UDP) plus adapter and IP/TCP/UDP/ICMP counters.
+No flags: lists live PIDs and waits for you to pick one.
 
+Logs only that process: its sockets and the HTTP/CONNECT flows it
+sends through the local proxy. Nothing else on the machine is logged.
+
+  --process=NAME      Target process name (substring)
+  --pid=N             Target process id
+  --launch=PATH       Start the app pointed at this proxy
+  -- args             Extra arguments after -- go to the launched app
+  --port=N            Proxy listen port (default 8888)
+  --listen=ADDR       Bind address (default 127.0.0.1)
+  --fresh-profile     Chromium: temp --user-data-dir so flags apply
+  --no-fresh-profile  Chromium: reuse the existing profile
+  --list              Print processes and exit
   --established       Only ESTABLISHED TCP
-  --listen            Only listening TCP sockets
+  --listen-sockets    Only listening TCP sockets
   --tcp               Hide UDP
-  --process=NAME      Filter by process name (substring)
   --limit=N           Max socket rows (default 60, 0 = all)
   --interval=N        Refresh interval in seconds (default 1)
   --no-color          Disable ANSI colors
   --help              Show this help
 
-Requires Windows. Run elevated to resolve more process names.
-Metadata only — packet contents are never captured.
+Requires Windows. Use --launch so the app actually uses the proxy.
+Already-running apps are socket-logged only unless they are started
+with --launch. HTTPS payloads are not decrypted.
 ''';
 
 class _Options {
@@ -72,35 +209,62 @@ class _Options {
     required this.listen,
     required this.tcpOnly,
     required this.process,
+    required this.pid,
     required this.limit,
     required this.intervalMs,
     required this.color,
     required this.help,
+    required this.launch,
+    required this.launchArgs,
+    required this.port,
+    required this.listenAddress,
+    required this.freshProfile,
+    required this.listProcesses,
   });
 
   final bool established;
   final bool listen;
   final bool tcpOnly;
   final String? process;
+  final int? pid;
   final int limit;
   final int intervalMs;
   final bool color;
   final bool help;
+  final String? launch;
+  final List<String> launchArgs;
+  final int port;
+  final String listenAddress;
+  final bool freshProfile;
+  final bool listProcesses;
 
   factory _Options.parse(List<String> args) {
     var established = false;
     var listen = false;
     var tcpOnly = false;
     String? process;
+    int? pid;
     var limit = 60;
     var intervalMs = 1000;
     var color = true;
     var help = false;
+    String? launch;
+    var launchArgs = <String>[];
+    var port = 8888;
+    var listenAddress = '127.0.0.1';
+    var freshProfile = true;
+    var listProcesses = false;
 
-    for (final arg in args) {
+    final split = args.indexOf('--');
+    final ours = split == -1 ? args : args.sublist(0, split);
+    if (split != -1) {
+      launchArgs = args.sublist(split + 1);
+    }
+
+    for (final arg in ours) {
       if (arg == '--established') {
         established = true;
-      } else if (arg == '--listen') {
+      } else if (arg == '--listen' || arg == '--listen-sockets') {
         listen = true;
       } else if (arg == '--tcp') {
         tcpOnly = true;
@@ -108,15 +272,36 @@ class _Options {
         color = false;
       } else if (arg == '--help' || arg == '-h') {
         help = true;
+      } else if (arg == '--proxy' ||
+          arg == '--system' ||
+          arg == '--no-system') {
+        // Removed: this tool only logs one app, never the system proxy.
+      } else if (arg == '--fresh-profile') {
+        freshProfile = true;
+      } else if (arg == '--no-fresh-profile') {
+        freshProfile = false;
+      } else if (arg == '--list') {
+        listProcesses = true;
       } else if (arg.startsWith('--process=')) {
         process = arg.substring(10).toLowerCase();
+      } else if (arg.startsWith('--pid=')) {
+        pid = int.tryParse(arg.substring(6));
+      } else if (arg.startsWith('--launch=')) {
+        launch = arg.substring(9);
+      } else if (arg.startsWith('--port=')) {
+        port = int.tryParse(arg.substring(7)) ?? 8888;
+      } else if (arg.startsWith('--listen=')) {
+        listenAddress = arg.substring(9);
+        if (listenAddress.isEmpty) {
+          listenAddress = '127.0.0.1';
+        }
       } else if (arg.startsWith('--limit=')) {
         limit = int.tryParse(arg.substring(8)) ?? 60;
       } else if (arg.startsWith('--interval=')) {
         final seconds = num.tryParse(arg.substring(11)) ?? 1;
         intervalMs = math.max(200, (seconds * 1000).round());
       } else if (arg == '--all' || arg == '--udp') {
-        // Kept so older flags still run; everything is already the default.
+        // Kept so older flags still run.
       } else {
         stderr.writeln('Unknown option: $arg');
         help = true;
@@ -128,10 +313,17 @@ class _Options {
       listen: listen,
       tcpOnly: tcpOnly,
       process: process,
+      pid: pid,
       limit: limit,
       intervalMs: intervalMs,
       color: color,
       help: help,
+      launch: launch,
+      launchArgs: launchArgs,
+      port: port,
+      listenAddress: listenAddress,
+      freshProfile: freshProfile,
+      listProcesses: listProcesses,
     );
   }
 }
@@ -139,7 +331,9 @@ class _Options {
 void _render(
   Snapshot current,
   Snapshot? previous,
-  _Options options, {
+  _Options options,
+  AppProxyServer proxy,
+  ProxyTarget target, {
   required bool clear,
 }) {
   bool visible(NetEndpoint socket) {
@@ -152,11 +346,7 @@ void _render(
     if (options.listen && !socket.isListen) {
       return false;
     }
-    if (options.process != null &&
-        !socket.processName.toLowerCase().contains(options.process!)) {
-      return false;
-    }
-    return true;
+    return target.matches(socket.processName, socket.pid);
   }
 
   final sockets = current.endpoints.where(visible).toList();
@@ -181,187 +371,69 @@ void _render(
         if (!currentKeys.contains(socket.key) && visible(socket)) socket,
   ];
 
-  final elapsed = previous == null
-      ? 1.0
-      : current.capturedAt.difference(previous.capturedAt).inMilliseconds /
-          1000.0;
-  final seconds = elapsed <= 0 ? 1.0 : elapsed;
-  final stackDelta = previous == null
-      ? null
-      : _StackDelta.from(current.stack, previous.stack, seconds);
-
   final buffer = StringBuffer();
   if (clear) {
     buffer.write('\x1b[H\x1b[J');
   }
 
-  buffer.writeln(_style(options, '1', 'WINDOWS SOCKET MONITOR'));
+  buffer.writeln(_style(options, '1', 'APP LOG'));
   buffer.writeln(
-    'Updated ${current.capturedAt.toLocal()}   '
-    'refresh ${options.intervalMs} ms   '
-    '${sockets.length} sockets visible   '
-    '+${opened.length} / -${closed.length} this tick',
+    'Target ${target.label}   '
+    'proxy ${proxy.listenLabel}   '
+    'flows ${proxy.totalFlows}   '
+    'tunnels ${proxy.openTunnels}   '
+    '↑ ${_bytes(proxy.bytesUp)}  ↓ ${_bytes(proxy.bytesDown)}   '
+    '${current.capturedAt.toLocal()}',
   );
   buffer.writeln();
-
-  _writeStack(buffer, current.stack, stackDelta, options);
-  buffer.writeln();
-  _writeAdapters(buffer, current, previous, seconds, options);
-  buffer.writeln();
-  _writeProcesses(buffer, sockets, options);
+  _writeFlows(buffer, proxy, options);
   buffer.writeln();
   _writeEvents(buffer, opened, closed, options);
   buffer.writeln();
   _writeSockets(buffer, sockets, opened, options);
-
   stdout.write(buffer);
 }
 
-void _writeStack(
-  StringBuffer buffer,
-  StackStats stack,
-  _StackDelta? delta,
-  _Options options,
-) {
-  buffer.writeln(_style(options, '1', 'STACK COUNTERS'));
+void _writeFlows(StringBuffer buffer, AppProxyServer proxy, _Options options) {
+  final rows = proxy.flows.reversed.take(18).toList();
+  buffer.writeln(_style(options, '1', 'FLOWS  (${proxy.totalFlows})'));
   buffer.writeln(
-    'IP    recv ${_count(stack.ipInReceives)}  '
-    'deliver ${_count(stack.ipInDelivers)}  '
-    'out ${_count(stack.ipOutRequests)}'
-    '${delta == null ? '' : '   Δ ${_perSec(delta.ipIn)}/s in  ${_perSec(delta.ipOut)}/s out'}',
+    '${_pad('', 3)}'
+    '${_pad('Meth', 8)}'
+    '${_pad('Code', 6)}'
+    '${_pad('Host', 32)}'
+    '${_pad('Path', 28)}'
+    '${_pad('Up', 10)}'
+    '${_pad('Down', 10)}'
+    'Age',
   );
-  buffer.writeln(
-    'TCP   estab ${stack.tcpEstablished}  '
-    'conns ${_count(stack.tcpConnections)}  '
-    'segs in ${_count(stack.tcpInSegs)}  '
-    'out ${_count(stack.tcpOutSegs)}  '
-    'retrans ${_count(stack.tcpRetransSegs)}'
-    '${delta == null ? '' : '   Δ ${_perSec(delta.tcpIn)}/s in  ${_perSec(delta.tcpOut)}/s out'}',
-  );
-  buffer.writeln(
-    'UDP   in ${_count(stack.udpInDatagrams)}  '
-    'out ${_count(stack.udpOutDatagrams)}  '
-    'no-port ${_count(stack.udpNoPorts)}  '
-    'err ${_count(stack.udpInErrors)}'
-    '${delta == null ? '' : '   Δ ${_perSec(delta.udpIn)}/s in  ${_perSec(delta.udpOut)}/s out'}',
-  );
-  buffer.writeln(
-    'ICMP  in ${_count(stack.icmpInMsgs)}  '
-    'out ${_count(stack.icmpOutMsgs)}'
-    '${delta == null ? '' : '   Δ ${_perSec(delta.icmpIn)}/s in  ${_perSec(delta.icmpOut)}/s out'}',
-  );
-}
-
-void _writeAdapters(
-  StringBuffer buffer,
-  Snapshot current,
-  Snapshot? previous,
-  double seconds,
-  _Options options,
-) {
-  buffer.writeln(_style(options, '1', 'ADAPTERS'));
-  buffer.writeln(
-    '${_pad('Name', 28)}'
-    '${_pad('Down', 12)}'
-    '${_pad('Up', 12)}'
-    '${_pad('In total', 14)}'
-    '${_pad('Out total', 14)}'
-    'Status',
-  );
-
-  var totalInRate = 0;
-  var totalOutRate = 0;
-  for (final adapter in current.adapters) {
-    if (adapter.isLoopback || !adapter.isUp) {
-      continue;
-    }
-    AdapterCounters? before;
-    if (previous != null) {
-      for (final adapterBefore in previous.adapters) {
-        if (adapterBefore.index == adapter.index) {
-          before = adapterBefore;
-          break;
-        }
-      }
-    }
-    final inRate = before == null
-        ? 0
-        : _rate(adapter.inOctets, before.inOctets, seconds);
-    final outRate = before == null
-        ? 0
-        : _rate(adapter.outOctets, before.outOctets, seconds);
-    totalInRate += inRate;
-    totalOutRate += outRate;
+  if (rows.isEmpty) {
     buffer.writeln(
-      '${_pad(_clip(adapter.name, 26), 28)}'
-      '${_pad('${_bytes(inRate)}/s', 12)}'
-      '${_pad('${_bytes(outRate)}/s', 12)}'
-      '${_pad(_bytes(adapter.inOctets), 14)}'
-      '${_pad(_bytes(adapter.outOctets), 14)}'
-      'up',
+      '  (no HTTP yet — use --launch so this app is sent through the proxy)',
     );
+    return;
   }
-  buffer.writeln(
-    '${_pad('TOTAL', 28)}'
-    '${_pad('${_bytes(totalInRate)}/s', 12)}'
-    '${_pad('${_bytes(totalOutRate)}/s', 12)}',
-  );
-}
-
-void _writeProcesses(
-  StringBuffer buffer,
-  List<NetEndpoint> sockets,
-  _Options options,
-) {
-  final grouped = <String, _ProcessSockets>{};
-  for (final socket in sockets) {
-    final key = '${socket.pid}|${socket.processName}';
-    final row = grouped.putIfAbsent(
-      key,
-      () => _ProcessSockets(socket.processName, socket.pid),
-    );
-    row.total++;
-    if (socket.protocol == 'TCP') {
-      row.tcp++;
-    } else {
-      row.udp++;
-    }
-    if (socket.isEstablished) {
-      row.established++;
-    }
-    if (socket.isListen) {
-      row.listen++;
-    }
-  }
-
-  final rows = grouped.values.toList()
-    ..sort((a, b) => b.total.compareTo(a.total));
-
-  buffer.writeln(
-    _style(options, '1', 'PROCESSES  (${rows.length} with sockets)'),
-  );
-  buffer.writeln(
-    '${_pad('Process', 22)}'
-    '${_pad('PID', 8)}'
-    '${_pad('Total', 8)}'
-    '${_pad('TCP', 7)}'
-    '${_pad('UDP', 7)}'
-    '${_pad('Estab', 8)}'
-    'Listen',
-  );
-  for (final row in rows.take(15)) {
+  for (final flow in rows) {
+    final mark = flow.open ? '*' : ' ';
+    final code = flow.error != null
+        ? 'ERR'
+        : (flow.status == 0 ? '-' : '${flow.status}');
+    final line =
+        '${_pad(mark, 3)}'
+        '${_pad(flow.method, 8)}'
+        '${_pad(code, 6)}'
+        '${_pad(_clip(flow.authority, 30), 32)}'
+        '${_pad(_clip(flow.method == 'CONNECT' ? '-' : flow.path, 26), 28)}'
+        '${_pad(_bytes(flow.bytesUp), 10)}'
+        '${_pad(_bytes(flow.bytesDown), 10)}'
+        '${flow.duration.inMilliseconds}ms';
     buffer.writeln(
-      '${_pad(_clip(row.name, 20), 22)}'
-      '${_pad('${row.pid}', 8)}'
-      '${_pad('${row.total}', 8)}'
-      '${_pad('${row.tcp}', 7)}'
-      '${_pad('${row.udp}', 7)}'
-      '${_pad('${row.established}', 8)}'
-      '${row.listen}',
+      flow.error != null
+          ? _style(options, '31', line)
+          : flow.open
+          ? _style(options, '33', line)
+          : line,
     );
-  }
-  if (rows.length > 15) {
-    buffer.writeln('... ${rows.length - 15} more processes');
   }
 }
 
@@ -382,8 +454,8 @@ void _writeEvents(
         options,
         '32',
         '  + ${_clip(socket.processName, 18)}  '
-        '${socket.protoLabel} ${socket.state}  '
-        '${socket.local} -> ${socket.remote}',
+            '${socket.protoLabel} ${socket.state}  '
+            '${socket.local} -> ${socket.remote}',
       ),
     );
   }
@@ -393,12 +465,13 @@ void _writeEvents(
         options,
         '31',
         '  - ${_clip(socket.processName, 18)}  '
-        '${socket.protoLabel} ${socket.state}  '
-        '${socket.local} -> ${socket.remote}',
+            '${socket.protoLabel} ${socket.state}  '
+            '${socket.local} -> ${socket.remote}',
       ),
     );
   }
-  final extra = (opened.length - 8).clamp(0, opened.length) +
+  final extra =
+      (opened.length - 8).clamp(0, opened.length) +
       (closed.length - 8).clamp(0, closed.length);
   if (extra > 0) {
     buffer.writeln('  ... $extra more events');
@@ -435,76 +508,13 @@ void _writeSockets(
         '${_pad(socket.state, 13)}'
         '${_pad(_clip(socket.local, 28), 30)}'
         '${socket.remote}';
-    buffer.writeln(
-      mark == '+' ? _style(options, '32', line) : line,
-    );
+    buffer.writeln(mark == '+' ? _style(options, '32', line) : line);
   }
   if (sockets.length > limit) {
-    buffer.writeln('... ${sockets.length - limit} more  (use --limit=0 for all)');
-  }
-}
-
-class _ProcessSockets {
-  _ProcessSockets(this.name, this.pid);
-
-  final String name;
-  final int pid;
-  int total = 0;
-  int tcp = 0;
-  int udp = 0;
-  int established = 0;
-  int listen = 0;
-}
-
-class _StackDelta {
-  const _StackDelta({
-    required this.ipIn,
-    required this.ipOut,
-    required this.tcpIn,
-    required this.tcpOut,
-    required this.udpIn,
-    required this.udpOut,
-    required this.icmpIn,
-    required this.icmpOut,
-  });
-
-  final int ipIn;
-  final int ipOut;
-  final int tcpIn;
-  final int tcpOut;
-  final int udpIn;
-  final int udpOut;
-  final int icmpIn;
-  final int icmpOut;
-
-  factory _StackDelta.from(StackStats now, StackStats before, double seconds) {
-    int perSec(int current, int previous) {
-      var delta = current - previous;
-      if (delta < 0) {
-        delta += 0x100000000;
-      }
-      return (delta / seconds).round();
-    }
-
-    return _StackDelta(
-      ipIn: perSec(now.ipInReceives, before.ipInReceives),
-      ipOut: perSec(now.ipOutRequests, before.ipOutRequests),
-      tcpIn: perSec(now.tcpInSegs, before.tcpInSegs),
-      tcpOut: perSec(now.tcpOutSegs, before.tcpOutSegs),
-      udpIn: perSec(now.udpInDatagrams, before.udpInDatagrams),
-      udpOut: perSec(now.udpOutDatagrams, before.udpOutDatagrams),
-      icmpIn: perSec(now.icmpInMsgs, before.icmpInMsgs),
-      icmpOut: perSec(now.icmpOutMsgs, before.icmpOutMsgs),
+    buffer.writeln(
+      '... ${sockets.length - limit} more  (use --limit=0 for all)',
     );
   }
-}
-
-int _rate(int now, int before, double seconds) {
-  var delta = now - before;
-  if (delta < 0) {
-    delta += 0x100000000;
-  }
-  return (delta / seconds).round();
 }
 
 String _bytes(int value) {
@@ -518,18 +528,6 @@ String _bytes(int value) {
   final digits = unit == 0 || size >= 10 ? 0 : 1;
   return '${size.toStringAsFixed(digits)} ${units[unit]}';
 }
-
-String _count(int value) {
-  if (value >= 1000000) {
-    return '${(value / 1000000).toStringAsFixed(1)}M';
-  }
-  if (value >= 10000) {
-    return '${(value / 1000).toStringAsFixed(1)}K';
-  }
-  return '$value';
-}
-
-String _perSec(int value) => _count(value);
 
 String _pad(String value, int width) {
   if (value.length >= width) {

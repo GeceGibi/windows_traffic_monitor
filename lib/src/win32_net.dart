@@ -10,71 +10,51 @@ const int _udpTableOwnerPid = 1;
 const int _errorInsufficientBuffer = 122;
 const int _noError = 0;
 const int _processQueryLimitedInformation = 0x1000;
-const int _ifTypeSoftwareLoopback = 24;
 const int _enableVirtualTerminalProcessing = 0x0004;
 
 final DynamicLibrary _iphlpapi = DynamicLibrary.open('iphlpapi.dll');
 final DynamicLibrary _kernel32 = DynamicLibrary.open('kernel32.dll');
 
-typedef _GetExtendedTableNative = Uint32 Function(
-  Pointer<Void>,
-  Pointer<Uint32>,
-  Int32,
-  Uint32,
-  Int32,
-  Uint32,
-);
-typedef _GetExtendedTableDart = int Function(
-  Pointer<Void>,
-  Pointer<Uint32>,
-  int,
-  int,
-  int,
-  int,
-);
+typedef _GetExtendedTableNative =
+    Uint32 Function(
+      Pointer<Void>,
+      Pointer<Uint32>,
+      Int32,
+      Uint32,
+      Int32,
+      Uint32,
+    );
+typedef _GetExtendedTableDart =
+    int Function(Pointer<Void>, Pointer<Uint32>, int, int, int, int);
 
 final _GetExtendedTableDart _getExtendedTcpTable = _iphlpapi
     .lookupFunction<_GetExtendedTableNative, _GetExtendedTableDart>(
-  'GetExtendedTcpTable',
-);
+      'GetExtendedTcpTable',
+    );
 
 final _GetExtendedTableDart _getExtendedUdpTable = _iphlpapi
     .lookupFunction<_GetExtendedTableNative, _GetExtendedTableDart>(
-  'GetExtendedUdpTable',
-);
-
-final int Function(Pointer<Void> table, Pointer<Uint32> size, int order)
-    _getIfTable = _iphlpapi.lookupFunction<
-        Uint32 Function(Pointer<Void>, Pointer<Uint32>, Int32),
-        int Function(Pointer<Void>, Pointer<Uint32>, int)>('GetIfTable');
-
-typedef _GetStatsExNative = Uint32 Function(Pointer<Void>, Uint32);
-typedef _GetStatsExDart = int Function(Pointer<Void>, int);
-
-final _GetStatsExDart _getIpStatisticsEx = _iphlpapi
-    .lookupFunction<_GetStatsExNative, _GetStatsExDart>('GetIpStatisticsEx');
-final _GetStatsExDart _getTcpStatisticsEx = _iphlpapi
-    .lookupFunction<_GetStatsExNative, _GetStatsExDart>('GetTcpStatisticsEx');
-final _GetStatsExDart _getUdpStatisticsEx = _iphlpapi
-    .lookupFunction<_GetStatsExNative, _GetStatsExDart>('GetUdpStatisticsEx');
-final _GetStatsExDart _getIcmpStatisticsEx = _iphlpapi
-    .lookupFunction<_GetStatsExNative, _GetStatsExDart>('GetIcmpStatisticsEx');
+      'GetExtendedUdpTable',
+    );
 
 final int Function(int desiredAccess, int inheritHandle, int processId)
-    _openProcess = _kernel32.lookupFunction<
-        IntPtr Function(Uint32, Int32, Uint32),
-        int Function(int, int, int)>('OpenProcess');
+_openProcess = _kernel32
+    .lookupFunction<
+      IntPtr Function(Uint32, Int32, Uint32),
+      int Function(int, int, int)
+    >('OpenProcess');
 
 final int Function(
   int process,
   int flags,
   Pointer<Utf16> name,
   Pointer<Uint32> size,
-) _queryFullProcessImageName = _kernel32.lookupFunction<
-    Int32 Function(IntPtr, Uint32, Pointer<Utf16>, Pointer<Uint32>),
-    int Function(int, int, Pointer<Utf16>, Pointer<Uint32>)>(
-  'QueryFullProcessImageNameW',
-);
+)
+_queryFullProcessImageName = _kernel32
+    .lookupFunction<
+      Int32 Function(IntPtr, Uint32, Pointer<Utf16>, Pointer<Uint32>),
+      int Function(int, int, Pointer<Utf16>, Pointer<Uint32>)
+    >('QueryFullProcessImageNameW');
 
 final int Function(int handle) _closeHandle = _kernel32
     .lookupFunction<Int32 Function(IntPtr), int Function(int)>('CloseHandle');
@@ -82,65 +62,16 @@ final int Function(int handle) _closeHandle = _kernel32
 final int Function(int) _getStdHandle = _kernel32
     .lookupFunction<IntPtr Function(Int32), int Function(int)>('GetStdHandle');
 
-final int Function(int, Pointer<Uint32>) _getConsoleMode =
-    _kernel32.lookupFunction<Int32 Function(IntPtr, Pointer<Uint32>),
-        int Function(int, Pointer<Uint32>)>('GetConsoleMode');
+final int Function(int, Pointer<Uint32>) _getConsoleMode = _kernel32
+    .lookupFunction<
+      Int32 Function(IntPtr, Pointer<Uint32>),
+      int Function(int, Pointer<Uint32>)
+    >('GetConsoleMode');
 
 final int Function(int, int) _setConsoleMode = _kernel32
     .lookupFunction<Int32 Function(IntPtr, Uint32), int Function(int, int)>(
-  'SetConsoleMode',
-);
-
-final class _MibIfRow extends Struct {
-  @Array(256)
-  external Array<Uint16> wszName;
-  @Uint32()
-  external int dwIndex;
-  @Uint32()
-  external int dwType;
-  @Uint32()
-  external int dwMtu;
-  @Uint32()
-  external int dwSpeed;
-  @Uint32()
-  external int dwPhysAddrLen;
-  @Array(8)
-  external Array<Uint8> bPhysAddr;
-  @Uint32()
-  external int dwAdminStatus;
-  @Uint32()
-  external int dwOperStatus;
-  @Uint32()
-  external int dwLastChange;
-  @Uint32()
-  external int dwInOctets;
-  @Uint32()
-  external int dwInUcastPkts;
-  @Uint32()
-  external int dwInNUcastPkts;
-  @Uint32()
-  external int dwInDiscards;
-  @Uint32()
-  external int dwInErrors;
-  @Uint32()
-  external int dwInUnknownProtos;
-  @Uint32()
-  external int dwOutOctets;
-  @Uint32()
-  external int dwOutUcastPkts;
-  @Uint32()
-  external int dwOutNUcastPkts;
-  @Uint32()
-  external int dwOutDiscards;
-  @Uint32()
-  external int dwOutErrors;
-  @Uint32()
-  external int dwOutQLen;
-  @Uint32()
-  external int dwDescrLen;
-  @Array(256)
-  external Array<Uint8> bDescr;
-}
+      'SetConsoleMode',
+    );
 
 final class _MibTcpRowOwnerPid extends Struct {
   @Uint32()
@@ -196,116 +127,6 @@ final class _MibUdp6RowOwnerPid extends Struct {
   external int dwOwningPid;
 }
 
-final class _MibIpStats extends Struct {
-  @Uint32()
-  external int dwForwarding;
-  @Uint32()
-  external int dwDefaultTTL;
-  @Uint32()
-  external int dwInReceives;
-  @Uint32()
-  external int dwInHdrErrors;
-  @Uint32()
-  external int dwInAddrErrors;
-  @Uint32()
-  external int dwForwDatagrams;
-  @Uint32()
-  external int dwInUnknownProtos;
-  @Uint32()
-  external int dwInDiscards;
-  @Uint32()
-  external int dwInDelivers;
-  @Uint32()
-  external int dwOutRequests;
-  @Uint32()
-  external int dwRoutingDiscards;
-  @Uint32()
-  external int dwOutDiscards;
-  @Uint32()
-  external int dwOutNoRoutes;
-  @Uint32()
-  external int dwReasmTimeout;
-  @Uint32()
-  external int dwReasmReqds;
-  @Uint32()
-  external int dwReasmOks;
-  @Uint32()
-  external int dwReasmFails;
-  @Uint32()
-  external int dwFragOks;
-  @Uint32()
-  external int dwFragFails;
-  @Uint32()
-  external int dwFragCreates;
-  @Uint32()
-  external int dwNumIf;
-  @Uint32()
-  external int dwNumAddr;
-  @Uint32()
-  external int dwNumRoutes;
-}
-
-final class _MibTcpStats extends Struct {
-  @Uint32()
-  external int dwRtoAlgorithm;
-  @Uint32()
-  external int dwRtoMin;
-  @Uint32()
-  external int dwRtoMax;
-  @Uint32()
-  external int dwMaxConn;
-  @Uint32()
-  external int dwActiveOpens;
-  @Uint32()
-  external int dwPassiveOpens;
-  @Uint32()
-  external int dwAttemptFails;
-  @Uint32()
-  external int dwEstabResets;
-  @Uint32()
-  external int dwCurrEstab;
-  @Uint32()
-  external int dwInSegs;
-  @Uint32()
-  external int dwOutSegs;
-  @Uint32()
-  external int dwRetransSegs;
-  @Uint32()
-  external int dwInErrs;
-  @Uint32()
-  external int dwOutRsts;
-  @Uint32()
-  external int dwNumConns;
-}
-
-final class _MibUdpStats extends Struct {
-  @Uint32()
-  external int dwInDatagrams;
-  @Uint32()
-  external int dwNoPorts;
-  @Uint32()
-  external int dwInErrors;
-  @Uint32()
-  external int dwOutDatagrams;
-  @Uint32()
-  external int dwNumAddrs;
-}
-
-final class _MibIcmpEx extends Struct {
-  @Uint32()
-  external int inMsgs;
-  @Uint32()
-  external int inErrors;
-  @Array(256)
-  external Array<Uint32> inTypeCount;
-  @Uint32()
-  external int outMsgs;
-  @Uint32()
-  external int outErrors;
-  @Array(256)
-  external Array<Uint32> outTypeCount;
-}
-
 /// TCP connection or UDP endpoint owned by a process.
 class NetEndpoint {
   const NetEndpoint({
@@ -350,82 +171,14 @@ class NetEndpoint {
   bool get isEstablished => state == 'ESTABLISHED';
 }
 
-/// Adapter-level octet counters from GetIfTable.
-class AdapterCounters {
-  const AdapterCounters({
-    required this.name,
-    required this.index,
-    required this.type,
-    required this.operStatus,
-    required this.inOctets,
-    required this.outOctets,
-    required this.inPackets,
-    required this.outPackets,
-  });
-
-  final String name;
-  final int index;
-  final int type;
-  final int operStatus;
-  final int inOctets;
-  final int outOctets;
-  final int inPackets;
-  final int outPackets;
-
-  bool get isLoopback => type == _ifTypeSoftwareLoopback;
-
-  bool get isUp => operStatus == 4 || operStatus == 5;
-}
-
-class StackStats {
-  const StackStats({
-    required this.ipInReceives,
-    required this.ipInDelivers,
-    required this.ipOutRequests,
-    required this.tcpEstablished,
-    required this.tcpInSegs,
-    required this.tcpOutSegs,
-    required this.tcpRetransSegs,
-    required this.tcpConnections,
-    required this.udpInDatagrams,
-    required this.udpOutDatagrams,
-    required this.udpNoPorts,
-    required this.udpInErrors,
-    required this.icmpInMsgs,
-    required this.icmpOutMsgs,
-  });
-
-  final int ipInReceives;
-  final int ipInDelivers;
-  final int ipOutRequests;
-  final int tcpEstablished;
-  final int tcpInSegs;
-  final int tcpOutSegs;
-  final int tcpRetransSegs;
-  final int tcpConnections;
-  final int udpInDatagrams;
-  final int udpOutDatagrams;
-  final int udpNoPorts;
-  final int udpInErrors;
-  final int icmpInMsgs;
-  final int icmpOutMsgs;
-}
-
 class Snapshot {
-  const Snapshot({
-    required this.adapters,
-    required this.endpoints,
-    required this.stack,
-    required this.capturedAt,
-  });
+  const Snapshot({required this.endpoints, required this.capturedAt});
 
-  final List<AdapterCounters> adapters;
   final List<NetEndpoint> endpoints;
-  final StackStats stack;
   final DateTime capturedAt;
 }
 
-/// Reads live connection and adapter counters. Does not capture packet bytes.
+/// Reads sockets owned by the target process.
 class WindowsNetMonitor {
   WindowsNetMonitor() {
     if (!Platform.isWindows) {
@@ -435,13 +188,18 @@ class WindowsNetMonitor {
 
   final Map<int, String> _processCache = <int, String>{};
 
-  Snapshot capture() {
-    final endpoints = <NetEndpoint>[
-      ..._readTcp(ipv6: false),
-      ..._readTcp(ipv6: true),
-      ..._readUdp(ipv6: false),
-      ..._readUdp(ipv6: true),
-    ];
+  Snapshot capture({bool Function(String name, int pid)? only}) {
+    final endpoints =
+        <NetEndpoint>[
+              ..._readTcp(ipv6: false),
+              ..._readTcp(ipv6: true),
+              ..._readUdp(ipv6: false),
+              ..._readUdp(ipv6: true),
+            ]
+            .where(
+              (socket) => only == null || only(socket.processName, socket.pid),
+            )
+            .toList();
 
     endpoints.sort((a, b) {
       final byRank = _stateRank(a).compareTo(_stateRank(b));
@@ -449,104 +207,15 @@ class WindowsNetMonitor {
         return byRank;
       }
       final byName = a.processName.toLowerCase().compareTo(
-            b.processName.toLowerCase(),
-          );
+        b.processName.toLowerCase(),
+      );
       if (byName != 0) {
         return byName;
       }
       return a.local.compareTo(b.local);
     });
 
-    return Snapshot(
-      adapters: _readAdapters(),
-      endpoints: endpoints,
-      stack: _readStackStats(),
-      capturedAt: DateTime.now(),
-    );
-  }
-
-  List<AdapterCounters> _readAdapters() {
-    return using((arena) {
-      final size = arena<Uint32>();
-      var status = _getIfTable(nullptr, size, 1);
-      if (status != _errorInsufficientBuffer && status != _noError) {
-        throw WindowsNetException('GetIfTable size query failed ($status).');
-      }
-
-      final buffer = arena<Uint8>(size.value);
-      status = _getIfTable(buffer.cast(), size, 1);
-      if (status != _noError) {
-        throw WindowsNetException('GetIfTable failed ($status).');
-      }
-
-      final count = buffer.cast<Uint32>().value;
-      final rows = (buffer + 4).cast<_MibIfRow>();
-      final adapters = <AdapterCounters>[];
-      for (var i = 0; i < count; i++) {
-        final row = rows[i];
-        final descrLen = row.dwDescrLen.clamp(0, 256);
-        final chars = <int>[];
-        for (var n = 0; n < descrLen; n++) {
-          final byte = row.bDescr[n];
-          if (byte != 0) {
-            chars.add(byte);
-          }
-        }
-        final name = String.fromCharCodes(chars).trim();
-        adapters.add(
-          AdapterCounters(
-            name: name.isEmpty ? 'if-${row.dwIndex}' : name,
-            index: row.dwIndex,
-            type: row.dwType,
-            operStatus: row.dwOperStatus,
-            inOctets: row.dwInOctets,
-            outOctets: row.dwOutOctets,
-            inPackets: row.dwInUcastPkts + row.dwInNUcastPkts,
-            outPackets: row.dwOutUcastPkts + row.dwOutNUcastPkts,
-          ),
-        );
-      }
-      return adapters;
-    });
-  }
-
-  StackStats _readStackStats() {
-    return using((arena) {
-      final ip4 = arena<_MibIpStats>();
-      final ip6 = arena<_MibIpStats>();
-      final tcp4 = arena<_MibTcpStats>();
-      final tcp6 = arena<_MibTcpStats>();
-      final udp4 = arena<_MibUdpStats>();
-      final udp6 = arena<_MibUdpStats>();
-      final icmp4 = arena<_MibIcmpEx>();
-      final icmp6 = arena<_MibIcmpEx>();
-
-      _getIpStatisticsEx(ip4.cast(), _afInet);
-      _getIpStatisticsEx(ip6.cast(), _afInet6);
-      _getTcpStatisticsEx(tcp4.cast(), _afInet);
-      _getTcpStatisticsEx(tcp6.cast(), _afInet6);
-      _getUdpStatisticsEx(udp4.cast(), _afInet);
-      _getUdpStatisticsEx(udp6.cast(), _afInet6);
-      _getIcmpStatisticsEx(icmp4.cast(), _afInet);
-      _getIcmpStatisticsEx(icmp6.cast(), _afInet6);
-
-      return StackStats(
-        ipInReceives: ip4.ref.dwInReceives + ip6.ref.dwInReceives,
-        ipInDelivers: ip4.ref.dwInDelivers + ip6.ref.dwInDelivers,
-        ipOutRequests: ip4.ref.dwOutRequests + ip6.ref.dwOutRequests,
-        tcpEstablished: tcp4.ref.dwCurrEstab + tcp6.ref.dwCurrEstab,
-        tcpInSegs: tcp4.ref.dwInSegs + tcp6.ref.dwInSegs,
-        tcpOutSegs: tcp4.ref.dwOutSegs + tcp6.ref.dwOutSegs,
-        tcpRetransSegs: tcp4.ref.dwRetransSegs + tcp6.ref.dwRetransSegs,
-        tcpConnections: tcp4.ref.dwNumConns + tcp6.ref.dwNumConns,
-        udpInDatagrams: udp4.ref.dwInDatagrams + udp6.ref.dwInDatagrams,
-        udpOutDatagrams: udp4.ref.dwOutDatagrams + udp6.ref.dwOutDatagrams,
-        udpNoPorts: udp4.ref.dwNoPorts + udp6.ref.dwNoPorts,
-        udpInErrors: udp4.ref.dwInErrors + udp6.ref.dwInErrors,
-        icmpInMsgs: icmp4.ref.inMsgs + icmp6.ref.inMsgs,
-        icmpOutMsgs: icmp4.ref.outMsgs + icmp6.ref.outMsgs,
-      );
-    });
+    return Snapshot(endpoints: endpoints, capturedAt: DateTime.now());
   }
 
   List<NetEndpoint> _readTcp({required bool ipv6}) {
@@ -676,6 +345,23 @@ class WindowsNetMonitor {
           processName: processName(rows[i].dwOwningPid),
         ),
     ];
+  }
+
+  /// Owner of a local TCP port, used to attribute proxy clients.
+  NetEndpoint? findLocalTcp(int localPort, {int? remotePort}) {
+    for (final endpoint in [
+      ..._readTcp(ipv6: false),
+      ..._readTcp(ipv6: true),
+    ]) {
+      if (endpoint.localPort != localPort) {
+        continue;
+      }
+      if (remotePort != null && endpoint.remotePort != remotePort) {
+        continue;
+      }
+      return endpoint;
+    }
+    return null;
   }
 
   String processName(int pid) {

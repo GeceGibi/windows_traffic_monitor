@@ -1,5 +1,5 @@
 name: windows_traffic_monitor
-description: Live Windows network adapter and connection monitor (no packet payloads).
+description: Per-app Windows socket log and HTTP/CONNECT proxy.
 version: 1.0.0
 publish_to: none
 
