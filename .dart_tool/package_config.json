@@ -1,0 +1,28 @@
+{
+  "configVersion": 2,
+  "packages": [
+    {
+      "name": "ffi",
+      "rootUri": "file:///Users/void/.pub-cache/hosted/pub.dev/ffi-2.2.0",
+      "packageUri": "lib/",
+      "languageVersion": "3.7"
+    },
+    {
+      "name": "lints",
+      "rootUri": "file:///Users/void/.pub-cache/hosted/pub.dev/lints-6.1.0",
+      "packageUri": "lib/",
+      "languageVersion": "3.8"
+    },
+    {
+      "name": "windows_traffic_monitor",
+      "rootUri": "../",
+      "packageUri": "lib/",
+      "languageVersion": "3.10"
+    }
+  ],
+  "generator": "pub",
+  "generatorVersion": "3.13.2",
+  "flutterRoot": "file:///Users/void/dev/flutter",
+  "flutterVersion": "3.47.2",
+  "pubCache": "file:///Users/void/.pub-cache"
+}
